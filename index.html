@@ -79,6 +79,15 @@ button.danger:hover { border-color: var(--accent-a); color: var(--accent-a); }
 #timeReadout { font-family: var(--mono); font-size: 14px; min-width: 150px; }
 #viewControls { display: flex; align-items: center; gap: 10px; }
 #viewControls label { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+.snapLabel { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+#snapUnitSel {
+  background: var(--panel-raised);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
 input[type="range"] { flex: 1; }
 #rollWrap { padding: 0; overflow: hidden; }
 #roll { display: block; width: 100%; height: 420px; cursor: text; }
@@ -148,6 +157,11 @@ input[type="range"] { flex: 1; }
     <input type="range" id="zoomSlider" min="0" max="100" value="40">
     <label>Position</label>
     <input type="range" id="posSlider" min="0" max="0" value="0">
+    <label class="snapLabel"><input type="checkbox" id="snapToggle" checked> Snap to grid</label>
+    <select id="snapUnitSel">
+      <option value="beat" selected>Beat</option>
+      <option value="bar">Bar</option>
+    </select>
   </div>
 
   <div class="panel" id="markerPanel">
@@ -335,6 +349,19 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
   let viewStart = 0;
   let viewDuration = 20;
 
+  let snapEnabled = true;
+  let snapUnit = "beat";
+  // Snaps to the SAME grid the canvas already draws (multiples of a
+  // beat or bar length from track-time zero), so a snapped click lands
+  // exactly on a visible gridline. Only applied to click-to-seek — a
+  // live tap (M / "Drop marker") stays exactly where you tapped, since
+  // that's deliberately feel-based, not grid-based.
+  function snapTime(t) {
+    if (!snapEnabled || !midi) return t;
+    const unit = snapUnit === "bar" ? barLen() : (60 / bpm);
+    return Math.round(t / unit) * unit;
+  }
+
   function barLen() { return (60 / bpm) * timeSigNum; }
   function formatBar(t) {
     return `bar ${Math.floor(t / barLen()) + 1}`;
@@ -357,6 +384,8 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
   const timeReadout = document.getElementById("timeReadout");
   const zoomSlider = document.getElementById("zoomSlider");
   const posSlider = document.getElementById("posSlider");
+  const snapToggle = document.getElementById("snapToggle");
+  const snapUnitSel = document.getElementById("snapUnitSel");
   const addMarkerBtn = document.getElementById("addMarkerBtn");
   const markerListEl = document.getElementById("markerListEl");
   const emptyMarkersEl = document.getElementById("emptyMarkersEl");
@@ -696,8 +725,11 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
     if (!midi) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    seekTo(timeForX(x, rect.width));
+    seekTo(snapTime(timeForX(x, rect.width)));
   });
+
+  snapToggle.addEventListener("change", () => { snapEnabled = snapToggle.checked; draw(); });
+  snapUnitSel.addEventListener("change", () => { snapUnit = snapUnitSel.value; draw(); });
 
   // --- animation loop: live playhead, auto-scroll the view, clock resync ---
   function frame() {
