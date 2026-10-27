@@ -1,0 +1,730 @@
+<meta charset="utf-8">
+<title>MIDI Marker Tool</title>
+<style>
+:root {
+  --bg: #121016;
+  --panel: #1c1922;
+  --panel-raised: #262230;
+  --fg: #ece8f2;
+  --fg-dim: #9b93a8;
+  --accent-a: #ff5b7f;
+  --accent-b: #4fd6ff;
+  --warn: #ffcf5b;
+  --ok: #35c47a;
+  --line: #352f3f;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  --body: "Inter", system-ui, sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f1f6;
+    --panel: #ffffff;
+    --panel-raised: #ebe7f2;
+    --fg: #201c28;
+    --fg-dim: #6b6478;
+    --line: #ddd7e4;
+    color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--body);
+  padding: 20px;
+}
+h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+.sub { color: var(--fg-dim); font-size: 13px; margin: 0 0 18px; }
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+#dropZone {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px dashed var(--line);
+}
+#dropZone.drag { border-color: var(--accent-b); background: var(--panel-raised); }
+#fileNameEl { color: var(--fg-dim); font-family: var(--mono); font-size: 13px; }
+#infoEl { color: var(--fg-dim); font-family: var(--mono); font-size: 12px; margin-left: auto; }
+button {
+  background: var(--panel-raised);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-family: var(--body);
+  font-size: 13px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent-b); }
+button.primary { border-color: var(--accent-b); color: var(--accent-b); }
+button.danger:hover { border-color: var(--accent-a); color: var(--accent-a); }
+#transport { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#timeReadout { font-family: var(--mono); font-size: 14px; min-width: 150px; }
+#viewControls { display: flex; align-items: center; gap: 10px; }
+#viewControls label { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+input[type="range"] { flex: 1; }
+#rollWrap { padding: 0; overflow: hidden; }
+#roll { display: block; width: 100%; height: 420px; cursor: text; }
+#markerPanel h2, #exportPanel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-dim); margin: 0 0 10px; }
+#addMarkerBtn { margin-bottom: 10px; }
+.hint { color: var(--fg-dim); font-size: 12px; margin-left: 8px; }
+#markerListEl { display: flex; flex-direction: column; gap: 6px; }
+.marker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-raised);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.marker-time {
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 70px;
+  text-align: left;
+}
+.marker-bar { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); min-width: 56px; }
+.marker-row input[type="text"] {
+  flex: 1;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-family: var(--body);
+  font-size: 13px;
+}
+#emptyMarkersEl { color: var(--fg-dim); font-size: 13px; }
+#log {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  max-height: 140px;
+  overflow-y: auto;
+}
+</style>
+<body>
+<h1>MIDI Marker Tool</h1>
+<p class="sub">Load a MIDI file, play it back with real instruments, and drop labeled markers (downbeats, phrase starts, breaks) at exact points — then export a new .mid with them baked in as standard Marker meta-events.</p>
+<main>
+  <div class="panel" id="dropZone">
+    <input type="file" id="fileInput" accept=".mid,.midi" hidden>
+    <button id="chooseFileBtn" class="primary">Choose MIDI file…</button>
+    <span id="fileNameEl">No file loaded — or drag one in here</span>
+    <span id="infoEl"></span>
+  </div>
+
+  <div class="panel" id="transport">
+    <button id="playBtn" disabled>Play</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <span id="timeReadout">0:00 / 0:00 · bar —</span>
+    <span class="hint">Space = play/pause · M = drop marker at playhead · click the roll to seek</span>
+  </div>
+
+  <div class="panel" id="rollWrap">
+    <canvas id="roll"></canvas>
+  </div>
+
+  <div class="panel" id="viewControls">
+    <label>Zoom</label>
+    <input type="range" id="zoomSlider" min="0" max="100" value="40">
+    <label>Position</label>
+    <input type="range" id="posSlider" min="0" max="0" value="0">
+  </div>
+
+  <div class="panel" id="markerPanel">
+    <h2>Markers</h2>
+    <button id="addMarkerBtn" disabled>+ Drop marker at playhead</button>
+    <div id="markerListEl"></div>
+    <div id="emptyMarkersEl">No markers yet.</div>
+  </div>
+
+  <div class="panel" id="exportPanel">
+    <h2>Export</h2>
+    <button id="exportBtn" class="primary" disabled>Export marked .mid</button>
+    <span class="hint">Writes every marker above into a new file as a standard MIDI Marker meta-event — nothing about the original notes changes.</span>
+  </div>
+
+  <div class="panel" id="log"></div>
+</main>
+
+<script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+<script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+<script type="module">
+import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib@4.3.5/+esm";
+
+(async function () {
+  "use strict";
+
+  const logEl = document.getElementById("log");
+  function log(msg) {
+    const t = new Date().toLocaleTimeString([], { hour12: false });
+    logEl.textContent += `[${t}] ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function errText(err) {
+    return (err && err.message) ? err.message : String(err);
+  }
+  function formatClock(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  // Same two-AudioContext split as Beat Match Lab, for the same reason:
+  // a real AudioWorkletNode needs a plain native context, and handing
+  // that same context to Tone via setContext() silently breaks
+  // Tone.Transport's scheduling. Tone's own context keeps driving
+  // *timing* only; every scheduled "time" gets converted to nativeCtx's
+  // clock (via a periodically-refreshed offset) before reaching the synth.
+  const nativeCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let clockOffset = 0;
+  function toNativeTime(toneTime) {
+    return toneTime - clockOffset;
+  }
+
+  // --- MIDI parsing: flattened on/off stream (for playback scheduling)
+  // plus note spans (time+duration+pitch+channel, for drawing) ---
+  function collectNotes(midi) {
+    const events = [];
+    const spans = [];
+    const programs = new Map();
+    midi.tracks.forEach((track) => {
+      const isPerc = !!(track.instrument && track.instrument.percussion) || track.channel === 9;
+      const channel = isPerc ? 9 : track.channel;
+      if (!isPerc) {
+        const program = (track.instrument && Number.isFinite(track.instrument.number)) ? track.instrument.number : 0;
+        if (!programs.has(channel)) programs.set(channel, program);
+      }
+      track.notes.forEach((n) => {
+        events.push({ type: "on", time: n.time, channel, midi: n.midi, velocity: n.velocity });
+        events.push({ type: "off", time: n.time + n.duration, channel, midi: n.midi });
+        spans.push({ time: n.time, duration: n.duration, midi: n.midi, channel, velocity: n.velocity });
+      });
+    });
+    events.sort((a, b) => a.time - b.time);
+    spans.sort((a, b) => a.time - b.time);
+    return { events, spans, programs };
+  }
+
+  function lowerBound(sortedEvents, t) {
+    let lo = 0, hi = sortedEvents.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedEvents[mid].time < t) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  // Lightweight scheduler ported from Beat Match Lab (see that project's
+  // history for why): registers exactly ONE Tone.Transport.scheduleRepeat
+  // lookahead tick and walks a plain pre-sorted array with a pointer, so
+  // start/stop are O(1) regardless of event count — and self-calibrates
+  // its own start reference from its first real tick (measured in the
+  // same clock Tone hands that callback) rather than converting between
+  // Transport-relative and AudioContext-relative time by hand, which is
+  // only valid once Transport has already been running a while.
+  function makePlaybackScheduler(events) {
+    const LOOKAHEAD = 0.05;
+    let idx = 0;
+    let baseTrackTime = 0;
+    let startAtContext = null;
+    let repeatId = null;
+
+    function fire(ev, fireAtToneTime) {
+      const nt = toNativeTime(fireAtToneTime);
+      if (ev.type === "on") synth.noteOn(ev.channel, ev.midi, Math.max(1, Math.round(ev.velocity * 127)), { time: nt });
+      else synth.noteOff(ev.channel, ev.midi, { time: nt });
+    }
+
+    function tick(time) {
+      if (!events.length) return;
+      if (startAtContext === null) startAtContext = time;
+      const windowEnd = (time - startAtContext) + baseTrackTime + LOOKAHEAD;
+      while (idx < events.length && events[idx].time <= windowEnd) {
+        fire(events[idx], startAtContext + (events[idx].time - baseTrackTime));
+        idx++;
+      }
+    }
+
+    return {
+      get state() { return repeatId !== null ? "started" : "stopped"; },
+      start(at, fromTime) {
+        if (repeatId !== null) return;
+        baseTrackTime = fromTime || 0;
+        idx = lowerBound(events, baseTrackTime);
+        startAtContext = null;
+        repeatId = Tone.Transport.scheduleRepeat(tick, LOOKAHEAD, at);
+      },
+      stop() {
+        if (repeatId !== null) { Tone.Transport.clear(repeatId); repeatId = null; }
+      },
+    };
+  }
+
+  function silenceSynth() {
+    if (!synth) return;
+    const now = nativeCtx.currentTime;
+    for (let ch = 0; ch < 16; ch++) synth.controllerChange(ch, 123, 0, { time: now });
+  }
+
+  async function ensureAudio() {
+    if (Tone.context.state !== "running") await Tone.start();
+    if (nativeCtx.state !== "running") await nativeCtx.resume();
+    if (Tone.Transport.state !== "started") Tone.Transport.start();
+  }
+
+  const masterGain = nativeCtx.createGain();
+  masterGain.gain.value = 0.9;
+  masterGain.connect(nativeCtx.destination);
+
+  let synth = null;
+  async function initAudioEngine() {
+    log("Loading the sampler engine…");
+    await nativeCtx.audioWorklet.addModule("spessasynth/spessasynth_processor.min.js");
+    synth = new WorkletSynthesizer(nativeCtx);
+    synth.connect(masterGain);
+    const sfBuffer = await (await fetch("soundfonts/GeneralUserGS.sf3")).arrayBuffer();
+    await synth.soundBankManager.addSoundBank(sfBuffer, "main");
+    await synth.isReady;
+    log("Sampler engine ready (GeneralUser GS soundfont, real GM instruments + drum kit).");
+  }
+
+  // --- state ---
+  let midi = null;
+  let currentFileName = "track";
+  let events = [];
+  let spans = [];
+  let programs = new Map();
+  let duration = 0;
+  let bpm = 120;
+  let timeSigNum = 4, timeSigDen = 4;
+  let pitchMin = 48, pitchMax = 72;
+
+  let markers = [];
+  let nextMarkerId = 1;
+
+  let scheduler = null;
+  let playing = false;
+  let playheadTime = 0;
+  let playStartTransportSeconds = 0;
+  let playStartTrackTime = 0;
+  let pendingAutoStopId = null;
+  let clockOffsetRepeatId = null;
+
+  const MIN_VIEW = 1;
+  let viewStart = 0;
+  let viewDuration = 20;
+
+  function barLen() { return (60 / bpm) * timeSigNum; }
+  function formatBar(t) {
+    return `bar ${Math.floor(t / barLen()) + 1}`;
+  }
+  function maxViewForTrack() { return Math.max(MIN_VIEW, duration || 20); }
+
+  function liveTrackTime() {
+    if (!playing) return playheadTime;
+    return playStartTrackTime + (Tone.Transport.seconds - playStartTransportSeconds);
+  }
+
+  // --- DOM refs ---
+  const fileInput = document.getElementById("fileInput");
+  const chooseFileBtn = document.getElementById("chooseFileBtn");
+  const dropZone = document.getElementById("dropZone");
+  const fileNameEl = document.getElementById("fileNameEl");
+  const infoEl = document.getElementById("infoEl");
+  const playBtn = document.getElementById("playBtn");
+  const stopBtn = document.getElementById("stopBtn");
+  const timeReadout = document.getElementById("timeReadout");
+  const zoomSlider = document.getElementById("zoomSlider");
+  const posSlider = document.getElementById("posSlider");
+  const addMarkerBtn = document.getElementById("addMarkerBtn");
+  const markerListEl = document.getElementById("markerListEl");
+  const emptyMarkersEl = document.getElementById("emptyMarkersEl");
+  const exportBtn = document.getElementById("exportBtn");
+  const canvas = document.getElementById("roll");
+  const ctx = canvas.getContext("2d");
+
+  // --- file loading ---
+  async function loadFile(file) {
+    let parsed;
+    try {
+      const buf = await file.arrayBuffer();
+      parsed = new Midi(buf);
+    } catch (err) {
+      log(`Failed to parse "${file.name}": ${errText(err)}`);
+      return;
+    }
+    pause();
+    midi = parsed;
+    currentFileName = file.name;
+    const collected = collectNotes(midi);
+    events = collected.events;
+    spans = collected.spans;
+    programs = collected.programs;
+    duration = midi.duration;
+    bpm = (midi.header.tempos[0] && midi.header.tempos[0].bpm) || 120;
+    const ts = midi.header.timeSignatures[0];
+    timeSigNum = ts ? ts.timeSignature[0] : 4;
+    timeSigDen = ts ? ts.timeSignature[1] : 4;
+    if (midi.header.tempos.length > 1) {
+      log(`Note: this track has ${midi.header.tempos.length} tempo changes — grid lines assume the first (${bpm.toFixed(1)} BPM) throughout.`);
+    }
+
+    let minP = 127, maxP = 0;
+    spans.forEach((s) => { minP = Math.min(minP, s.midi); maxP = Math.max(maxP, s.midi); });
+    if (minP > maxP) { minP = 48; maxP = 72; }
+    pitchMin = Math.max(0, minP - 2);
+    pitchMax = Math.min(127, maxP + 2);
+
+    markers = [];
+    (midi.header.meta || []).forEach((m) => {
+      if (m.type === "marker") markers.push({ id: nextMarkerId++, time: midi.header.ticksToSeconds(m.ticks), label: m.text || "" });
+    });
+    markers.sort((a, b) => a.time - b.time);
+
+    scheduler = makePlaybackScheduler(events);
+    playheadTime = 0;
+    viewStart = 0;
+    viewDuration = Math.min(duration || 20, 20);
+
+    fileNameEl.textContent = file.name;
+    const noteCount = spans.length;
+    infoEl.textContent = `${bpm.toFixed(1)} BPM · ${timeSigNum}/${timeSigDen} · ${formatClock(duration)} · ${noteCount} notes`;
+    log(`Loaded "${file.name}" — ${markers.length} existing marker(s) found.`);
+
+    playBtn.disabled = !synth;
+    addMarkerBtn.disabled = false;
+    exportBtn.disabled = false;
+
+    syncZoomSliderToViewDuration();
+    updatePosSlider();
+    renderMarkerList();
+    draw();
+  }
+
+  chooseFileBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
+  dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("drag"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag"));
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropZone.classList.remove("drag");
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+
+  // --- playback controls ---
+  async function play() {
+    if (playing || !midi || !synth) return;
+    await ensureAudio();
+    const at = Tone.Transport.seconds + 0.05;
+    scheduler.start(at, playheadTime);
+    playStartTransportSeconds = at;
+    playStartTrackTime = playheadTime;
+    playing = true;
+    playBtn.textContent = "Pause";
+    stopBtn.disabled = false;
+    const remaining = Math.max(0, duration - playheadTime);
+    pendingAutoStopId = Tone.Transport.scheduleOnce(() => {
+      pause();
+      playheadTime = duration;
+      draw();
+    }, at + remaining + 0.05);
+    log("Playing.");
+  }
+
+  function pause() {
+    if (!playing) { return; }
+    playheadTime = liveTrackTime();
+    scheduler && scheduler.stop();
+    silenceSynth();
+    if (pendingAutoStopId !== null) { Tone.Transport.clear(pendingAutoStopId); pendingAutoStopId = null; }
+    playing = false;
+    playBtn.textContent = "Play";
+  }
+
+  function stopPlayback() {
+    pause();
+    playheadTime = 0;
+    draw();
+  }
+
+  function seekTo(t) {
+    const wasPlaying = playing;
+    if (wasPlaying) pause();
+    playheadTime = Math.max(0, Math.min(duration, t));
+    if (wasPlaying) play();
+    draw();
+  }
+
+  playBtn.addEventListener("click", () => { playing ? pause() : play(); draw(); });
+  stopBtn.addEventListener("click", () => stopPlayback());
+
+  window.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.code === "Space") { e.preventDefault(); if (midi) { playing ? pause() : play(); draw(); } }
+    else if (e.key.toLowerCase() === "m") { e.preventDefault(); addMarkerAtPlayhead(); }
+  });
+
+  // --- markers ---
+  function addMarkerAtPlayhead() {
+    if (!midi) return;
+    const t = Math.max(0, Math.min(duration, liveTrackTime()));
+    markers.push({ id: nextMarkerId++, time: t, label: `marker${markers.length + 1}` });
+    resortMarkers();
+    log(`Marker added at ${formatClock(t)} (${formatBar(t)}).`);
+  }
+  addMarkerBtn.addEventListener("click", addMarkerAtPlayhead);
+
+  function resortMarkers() {
+    markers.sort((a, b) => a.time - b.time);
+    renderMarkerList();
+    draw();
+  }
+
+  function renderMarkerList() {
+    markerListEl.innerHTML = "";
+    emptyMarkersEl.style.display = markers.length ? "none" : "block";
+    markers.forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "marker-row";
+
+      const timeBtn = document.createElement("button");
+      timeBtn.className = "marker-time";
+      timeBtn.textContent = formatClock(m.time);
+      timeBtn.title = "Seek here";
+      timeBtn.addEventListener("click", () => seekTo(m.time));
+
+      const barSpan = document.createElement("span");
+      barSpan.className = "marker-bar";
+      barSpan.textContent = formatBar(m.time);
+
+      const nudgeBack = document.createElement("button");
+      nudgeBack.textContent = "◀";
+      nudgeBack.title = "Nudge earlier (10ms)";
+      nudgeBack.addEventListener("click", () => { m.time = Math.max(0, m.time - 0.01); resortMarkers(); });
+
+      const nudgeFwd = document.createElement("button");
+      nudgeFwd.textContent = "▶";
+      nudgeFwd.title = "Nudge later (10ms)";
+      nudgeFwd.addEventListener("click", () => { m.time = Math.min(duration, m.time + 0.01); resortMarkers(); });
+
+      const label = document.createElement("input");
+      label.type = "text";
+      label.value = m.label;
+      label.placeholder = "label…";
+      label.addEventListener("input", () => { m.label = label.value; draw(); });
+
+      const del = document.createElement("button");
+      del.className = "danger";
+      del.textContent = "✕";
+      del.title = "Delete marker";
+      del.addEventListener("click", () => { markers = markers.filter((x) => x.id !== m.id); renderMarkerList(); draw(); });
+
+      row.append(timeBtn, barSpan, nudgeBack, nudgeFwd, label, del);
+      markerListEl.appendChild(row);
+    });
+  }
+
+  // --- export: rebuild header.meta from OUR markers array (the single
+  // source of truth) so edits/deletes never leave stale duplicates, then
+  // re-serialize the whole file with @tonejs/midi's own writer. ---
+  function exportMidi() {
+    if (!midi) return;
+    midi.header.meta = (midi.header.meta || []).filter((m) => m.type !== "marker");
+    markers.forEach((m) => {
+      midi.header.meta.push({ ticks: midi.header.secondsToTicks(m.time), text: m.label || "marker", type: "marker" });
+    });
+    let bytes;
+    try {
+      bytes = midi.toArray();
+    } catch (err) {
+      log(`Export failed: ${errText(err)}`);
+      return;
+    }
+    const blob = new Blob([bytes], { type: "audio/midi" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const base = currentFileName.replace(/\.midi?$/i, "");
+    a.href = url;
+    a.download = `${base}_marked.mid`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    log(`Exported ${markers.length} marker(s) to "${a.download}".`);
+  }
+  exportBtn.addEventListener("click", exportMidi);
+
+  // --- view (zoom/scroll) ---
+  function syncZoomSliderToViewDuration() {
+    const maxView = maxViewForTrack();
+    const val = maxView > MIN_VIEW
+      ? Math.max(0, Math.min(100, 100 * Math.log(viewDuration / MIN_VIEW) / Math.log(maxView / MIN_VIEW)))
+      : 0;
+    zoomSlider.value = String(val);
+  }
+  function updatePosSlider() {
+    posSlider.max = String(Math.max(0, duration - viewDuration));
+    posSlider.value = String(viewStart);
+  }
+  zoomSlider.addEventListener("input", () => {
+    const maxView = maxViewForTrack();
+    const val = Number(zoomSlider.value);
+    viewDuration = MIN_VIEW * Math.pow(maxView / MIN_VIEW, val / 100);
+    viewStart = Math.max(0, Math.min(Math.max(0, duration - viewDuration), viewStart));
+    updatePosSlider();
+    draw();
+  });
+  posSlider.addEventListener("input", () => {
+    viewStart = Number(posSlider.value);
+    draw();
+  });
+
+  // --- canvas: resize, draw, click-to-seek ---
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+  window.addEventListener("resize", resizeCanvas);
+
+  function xForTime(t, w) { return ((t - viewStart) / viewDuration) * w; }
+  function timeForX(x, w) { return viewStart + (x / w) * viewDuration; }
+
+  const CHANNEL_COLORS = ["#4fd6ff", "#ff5b7f", "#ffcf5b", "#35c47a", "#b58cff", "#ff8a5b", "#5bffd0", "#ff5bd6"];
+
+  function draw() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#1c1922";
+    ctx.fillRect(0, 0, w, h);
+
+    if (midi) {
+      // grid
+      const bl = (60 / bpm);
+      ctx.lineWidth = 1;
+      let beatIdx = Math.floor(viewStart / bl) - 1;
+      for (;;) {
+        const t = beatIdx * bl;
+        if (t > viewStart + viewDuration) break;
+        if (t >= viewStart - bl) {
+          const x = xForTime(t, w);
+          const isBar = ((beatIdx % timeSigNum) + timeSigNum) % timeSigNum === 0;
+          ctx.strokeStyle = "#352f3f";
+          ctx.globalAlpha = isBar ? 0.9 : 0.35;
+          ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke();
+          if (isBar) {
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "#6b6478";
+            ctx.font = "11px monospace";
+            ctx.fillText(String(Math.round(t / (bl * timeSigNum)) + 1), x + 4, 12);
+          }
+        }
+        beatIdx++;
+      }
+      ctx.globalAlpha = 1;
+
+      // notes
+      const rowH = Math.max(2, h / (pitchMax - pitchMin + 1));
+      spans.forEach((s) => {
+        if (s.time + s.duration < viewStart || s.time > viewStart + viewDuration) return;
+        const x = xForTime(s.time, w);
+        const x2 = xForTime(s.time + s.duration, w);
+        const noteW = Math.max(1.5, x2 - x);
+        const y = h - (s.midi - pitchMin + 1) * rowH;
+        ctx.fillStyle = s.channel === 9 ? "#6b6478" : CHANNEL_COLORS[s.channel % CHANNEL_COLORS.length];
+        ctx.globalAlpha = 0.3 + 0.6 * s.velocity;
+        ctx.fillRect(x, y, noteW, Math.max(1.5, rowH - 1));
+      });
+      ctx.globalAlpha = 1;
+
+      // markers
+      markers.forEach((m) => {
+        if (m.time < viewStart - 0.001 || m.time > viewStart + viewDuration) return;
+        const x = xForTime(m.time, w);
+        ctx.strokeStyle = "#ffcf5b";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke();
+        if (m.label) {
+          ctx.fillStyle = "#121016";
+          const tw = ctx.measureText(m.label).width + 8;
+          ctx.fillRect(x + 1, h - 16, tw, 16);
+          ctx.fillStyle = "#ffcf5b";
+          ctx.font = "11px monospace";
+          ctx.fillText(m.label, x + 4, h - 4);
+        }
+      });
+
+      // playhead
+      const t = liveTrackTime();
+      if (t >= viewStart && t <= viewStart + viewDuration) {
+        const x = xForTime(t, w);
+        ctx.strokeStyle = "#ff5b7f";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      }
+      timeReadout.textContent = `${formatClock(t)} / ${formatClock(duration)} · ${formatBar(t)}`;
+    }
+  }
+
+  canvas.addEventListener("click", (e) => {
+    if (!midi) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    seekTo(timeForX(x, rect.width));
+  });
+
+  // --- animation loop: live playhead, auto-scroll the view, clock resync ---
+  function frame() {
+    if (playing) {
+      const t = liveTrackTime();
+      if (t > viewStart + viewDuration || t < viewStart) {
+        viewStart = Math.max(0, Math.min(Math.max(0, duration - viewDuration), t - viewDuration * 0.1));
+        updatePosSlider();
+      }
+      draw();
+    }
+    // Two independent AudioContexts don't necessarily run at exactly the
+    // same real rate (see Beat Match Lab's history) — refresh the offset
+    // every frame rather than once per ensureAudio() call, so a long solo
+    // playback doesn't slowly drift out of sync with its own clock.
+    if (Tone.context.state === "running" && nativeCtx.state === "running") {
+      clockOffset = Tone.context.currentTime - nativeCtx.currentTime;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  resizeCanvas();
+  requestAnimationFrame(frame);
+  initAudioEngine()
+    .then(() => { if (midi) playBtn.disabled = false; })
+    .catch((err) => log(`Engine failed to load: ${errText(err)}`));
+  log("Ready. Choose or drop a MIDI file to begin.");
+})();
+</script>
+</body>
