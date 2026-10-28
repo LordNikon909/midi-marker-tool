@@ -91,8 +91,11 @@ button.danger:hover { border-color: var(--accent-a); color: var(--accent-a); }
 input[type="range"] { flex: 1; }
 #rollWrap { padding: 0; overflow: hidden; }
 #roll { display: block; width: 100%; height: 420px; cursor: text; }
-#markerPanel h2, #exportPanel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-dim); margin: 0 0 10px; }
+#markerPanel h2, #exportPanel h2, #anchorPanel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-dim); margin: 0 0 10px; }
 #addMarkerBtn { margin-bottom: 10px; }
+#anchorControls { display: flex; gap: 8px; margin-bottom: 8px; }
+#anchorStatusEl { font-family: var(--mono); font-size: 13px; color: var(--fg-dim); margin-bottom: 8px; }
+#anchorStatusEl.set { color: var(--accent-b); }
 .hint { color: var(--fg-dim); font-size: 12px; margin-left: 8px; }
 #markerListEl { display: flex; flex-direction: column; gap: 6px; }
 .marker-row {
@@ -145,7 +148,7 @@ input[type="range"] { flex: 1; }
     <button id="playBtn" disabled>Play</button>
     <button id="stopBtn" disabled>Stop</button>
     <span id="timeReadout">0:00 / 0:00 · bar —</span>
-    <span class="hint">Space = play/pause · M = drop marker at playhead · click the roll to seek</span>
+    <span class="hint">Space = play/pause · M = drop marker at playhead · G = set grid anchor at playhead · click the roll to seek</span>
   </div>
 
   <div class="panel" id="rollWrap">
@@ -164,6 +167,16 @@ input[type="range"] { flex: 1; }
     </select>
   </div>
 
+  <div class="panel" id="anchorPanel">
+    <h2>Grid Anchor</h2>
+    <div id="anchorControls">
+      <button id="setAnchorBtn" disabled>Set grid anchor at playhead</button>
+      <button id="clearAnchorBtn" class="danger" disabled>Clear</button>
+    </div>
+    <div id="anchorStatusEl">No grid anchor set.</div>
+    <span class="hint">The one point a consuming app anchors its whole beatgrid to — like Traktor's beatgrid marker. Stored as a distinct MIDI Cue Point, not a Marker, so it's unambiguous. There's only one; setting a new one replaces it.</span>
+  </div>
+
   <div class="panel" id="markerPanel">
     <h2>Markers</h2>
     <button id="addMarkerBtn" disabled>+ Drop marker at playhead</button>
@@ -174,7 +187,7 @@ input[type="range"] { flex: 1; }
   <div class="panel" id="exportPanel">
     <h2>Export</h2>
     <button id="exportBtn" class="primary" disabled>Export marked .mid</button>
-    <span class="hint">Writes every marker above into a new file as a standard MIDI Marker meta-event — nothing about the original notes changes.</span>
+    <span class="hint">Writes the grid anchor (if set) as a Cue Point, and every marker above as a Marker meta-event, into a new file — nothing about the original notes changes.</span>
   </div>
 
   <div class="panel" id="log"></div>
@@ -336,6 +349,12 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
 
   let markers = [];
   let nextMarkerId = 1;
+  // The grid anchor is a single special point — "the first real downbeat"
+  // — stored as a MIDI Cue Point (not a Marker), a different meta-event
+  // type, so a consuming app can tell "this is THE anchor" apart from
+  // ordinary labeled Markers without relying on text matching. There is
+  // at most one: setting a new one replaces the old.
+  let gridAnchorTime = null;
 
   let scheduler = null;
   let playing = false;
@@ -389,6 +408,9 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
   const addMarkerBtn = document.getElementById("addMarkerBtn");
   const markerListEl = document.getElementById("markerListEl");
   const emptyMarkersEl = document.getElementById("emptyMarkersEl");
+  const setAnchorBtn = document.getElementById("setAnchorBtn");
+  const clearAnchorBtn = document.getElementById("clearAnchorBtn");
+  const anchorStatusEl = document.getElementById("anchorStatusEl");
   const exportBtn = document.getElementById("exportBtn");
   const canvas = document.getElementById("roll");
   const ctx = canvas.getContext("2d");
@@ -426,8 +448,10 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
     pitchMax = Math.min(127, maxP + 2);
 
     markers = [];
+    gridAnchorTime = null;
     (midi.header.meta || []).forEach((m) => {
       if (m.type === "marker") markers.push({ id: nextMarkerId++, time: midi.header.ticksToSeconds(m.ticks), label: m.text || "" });
+      else if (m.type === "cuePoint" && gridAnchorTime === null) gridAnchorTime = midi.header.ticksToSeconds(m.ticks);
     });
     markers.sort((a, b) => a.time - b.time);
 
@@ -439,15 +463,17 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
     fileNameEl.textContent = file.name;
     const noteCount = spans.length;
     infoEl.textContent = `${bpm.toFixed(1)} BPM · ${timeSigNum}/${timeSigDen} · ${formatClock(duration)} · ${noteCount} notes`;
-    log(`Loaded "${file.name}" — ${markers.length} existing marker(s) found.`);
+    log(`Loaded "${file.name}" — ${markers.length} existing marker(s) found${gridAnchorTime !== null ? `, grid anchor at ${formatClock(gridAnchorTime)}` : ", no grid anchor set"}.`);
 
     playBtn.disabled = !synth;
     addMarkerBtn.disabled = false;
+    setAnchorBtn.disabled = false;
     exportBtn.disabled = false;
 
     syncZoomSliderToViewDuration();
     updatePosSlider();
     renderMarkerList();
+    renderAnchorStatus();
     draw();
   }
 
@@ -513,6 +539,7 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
     if (e.code === "Space") { e.preventDefault(); if (midi) { playing ? pause() : play(); draw(); } }
     else if (e.key.toLowerCase() === "m") { e.preventDefault(); addMarkerAtPlayhead(); }
+    else if (e.key.toLowerCase() === "g") { e.preventDefault(); setGridAnchorAtPlayhead(); }
   });
 
   // --- markers ---
@@ -524,6 +551,34 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
     log(`Marker added at ${formatClock(t)} (${formatBar(t)}).`);
   }
   addMarkerBtn.addEventListener("click", addMarkerAtPlayhead);
+
+  function renderAnchorStatus() {
+    if (gridAnchorTime !== null) {
+      anchorStatusEl.textContent = `Set at ${formatClock(gridAnchorTime)} (${formatBar(gridAnchorTime)}).`;
+      anchorStatusEl.classList.add("set");
+      clearAnchorBtn.disabled = false;
+    } else {
+      anchorStatusEl.textContent = "No grid anchor set.";
+      anchorStatusEl.classList.remove("set");
+      clearAnchorBtn.disabled = true;
+    }
+  }
+
+  function setGridAnchorAtPlayhead() {
+    if (!midi) return;
+    const t = Math.max(0, Math.min(duration, liveTrackTime()));
+    gridAnchorTime = t;
+    renderAnchorStatus();
+    draw();
+    log(`Grid anchor set at ${formatClock(t)} (${formatBar(t)}).`);
+  }
+  setAnchorBtn.addEventListener("click", setGridAnchorAtPlayhead);
+  clearAnchorBtn.addEventListener("click", () => {
+    gridAnchorTime = null;
+    renderAnchorStatus();
+    draw();
+    log("Grid anchor cleared.");
+  });
 
   function resortMarkers() {
     markers.sort((a, b) => a.time - b.time);
@@ -580,10 +635,13 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
   // re-serialize the whole file with @tonejs/midi's own writer. ---
   function exportMidi() {
     if (!midi) return;
-    midi.header.meta = (midi.header.meta || []).filter((m) => m.type !== "marker");
+    midi.header.meta = (midi.header.meta || []).filter((m) => m.type !== "marker" && m.type !== "cuePoint");
     markers.forEach((m) => {
       midi.header.meta.push({ ticks: midi.header.secondsToTicks(m.time), text: m.label || "marker", type: "marker" });
     });
+    if (gridAnchorTime !== null) {
+      midi.header.meta.push({ ticks: midi.header.secondsToTicks(gridAnchorTime), text: "downbeat", type: "cuePoint" });
+    }
     let bytes;
     try {
       bytes = midi.toArray();
@@ -601,7 +659,7 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    log(`Exported ${markers.length} marker(s) to "${a.download}".`);
+    log(`Exported ${markers.length} marker(s)${gridAnchorTime !== null ? " + grid anchor" : ""} to "${a.download}".`);
   }
   exportBtn.addEventListener("click", exportMidi);
 
@@ -708,6 +766,23 @@ import { WorkletSynthesizer } from "https://cdn.jsdelivr.net/npm/spessasynth_lib
           ctx.fillText(m.label, x + 4, h - 4);
         }
       });
+
+      // grid anchor — drawn distinctly from regular markers (cyan, full-
+      // width flag) since it's a different kind of point: not an
+      // annotation, the actual beatgrid reference.
+      if (gridAnchorTime !== null && gridAnchorTime >= viewStart - 0.001 && gridAnchorTime <= viewStart + viewDuration) {
+        const x = xForTime(gridAnchorTime, w);
+        ctx.strokeStyle = "#4fd6ff";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke();
+        ctx.fillStyle = "#121016";
+        const label = "anchor";
+        ctx.font = "11px monospace";
+        const tw = ctx.measureText(label).width + 8;
+        ctx.fillRect(x + 1, 0, tw, 16);
+        ctx.fillStyle = "#4fd6ff";
+        ctx.fillText(label, x + 4, 12);
+      }
 
       // playhead
       const t = liveTrackTime();

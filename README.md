@@ -1,6 +1,6 @@
 # MIDI Marker Tool
 
-A standalone companion to [Beat Match Lab](../beatmatch-lab): a dedicated editor for annotating a single MIDI track with precise, labeled marker points (downbeats, phrase starts, breaks) — then exporting a new `.mid` with them baked in as standard MIDI Marker meta-events, so the data travels with the file and doesn't depend on any particular app reading it.
+A standalone companion to [Beat Match Lab](../beatmatch-lab): a dedicated editor for annotating a single MIDI track with a precise beatgrid anchor and/or labeled marker points — then exporting a new `.mid` with them baked in as standard MIDI meta-events, so the data travels with the file and doesn't depend on any particular app reading it.
 
 This tool does nothing else — no mixing, no beatmatching. Just: load a track, see every note, play it back with real instruments, drop markers exactly where you want them, export.
 
@@ -24,13 +24,14 @@ and open `http://localhost:8100/index.html`.
 - **Play it back** through a real SoundFont2 synthesizer ([SpessaSynth](https://github.com/spessasus/SpessaSynth), via an AudioWorklet, loaded with `soundfonts/GeneralUserGS.sf3`) — the same engine Beat Match Lab uses, so what you hear while placing markers matches what you'll hear there.
 - **Zoom and scrub** via the zoom/position sliders, or click anywhere on the roll to seek there.
 - **Snap to grid** (on by default) — toggle it off, or switch it between beat/bar granularity, so a click-to-seek lands exactly on a gridline instead of an arbitrary pixel. Only affects click-to-seek; a live tap (M) always lands exactly where you tapped, since that's feel-based by design.
+- **Set a grid anchor** — the one point a consuming app re-derives its whole beatgrid from, like Traktor's beatgrid marker: press **G** (or "Set grid anchor at playhead") at the track's real first downbeat. There's only one; setting a new one replaces it, and "Clear" removes it. It's stored as a MIDI [Cue Point](https://www.recordingblogs.com/wiki/cue-point-meta-event-midi) (type 0x07) — a *different* meta-event type than a regular Marker — specifically so a consuming app can tell "this is THE anchor" apart from ordinary annotations without relying on text matching. Drawn as a distinct cyan flag at the top of the roll (regular markers are amber flags at the bottom).
 - **Drop a labeled marker** at the current playhead position — either live while listening (press **M**, or click "+ Drop marker at playhead", DJ tap-along style) or precisely after seeking to an exact spot. Space bar toggles play/pause.
 - **Edit markers** in the list below the roll: rename inline, nudge ±10ms with the ◀/▶ buttons, click a marker's time to jump the playhead there, or delete it.
-- **Export** writes every marker as a real MIDI [Marker meta-event](https://www.recordingblogs.com/wiki/marker-meta-event-midi) (type 0x06) at its exact tick position, via `@tonejs/midi`'s own serializer — nothing about the original notes/tracks is touched. Re-opening an exported file shows its markers back in the list for further editing.
+- **Export** writes the grid anchor (if set) as a Cue Point and every marker as a real MIDI [Marker meta-event](https://www.recordingblogs.com/wiki/marker-meta-event-midi) (type 0x06), each at its exact tick position, via `@tonejs/midi`'s own serializer — nothing about the original notes/tracks is touched. Re-opening an exported file shows both back for further editing.
 
 ## Marker naming convention
 
-MIDI's Marker event is just a tick position plus a text string — there's no built-in taxonomy of "downbeat" vs. "phrase" vs. "break". This tool doesn't impose one either; name markers however the consuming app (e.g. Beat Match Lab) expects to parse them, for example: `downbeat`, `phrase`, `break:in`, `break:out`.
+A regular Marker event is just a tick position plus a text string — there's no built-in taxonomy of "phrase" vs. "break" beyond what you type. Name them however the consuming app expects to parse them, for example: `phrase`, `break:in`, `break:out`. The grid anchor doesn't need this — its *type* (Cue Point) is what identifies it, not its label.
 
 ## Known limitations
 
